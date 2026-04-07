@@ -83,10 +83,10 @@
     <div class="navbar">Splitwise Dashboard</div>
 
     <div class="tabs">
-        <div class="tab active" onclick="switchTab('groups')">Groups</div>
-        <div class="tab" onclick="switchTab('friends')">Friends</div>
-        <div class="tab" onclick="switchTab('activity')">Activity</div>
-        <div class="tab" onclick="switchTab('profile')">Profile</div>
+        <div class="tab active" onclick="switchTab(event, 'groups')">Groups</div>
+        <div class="tab" onclick="switchTab(event, 'friends')">Friends</div>
+        <div class="tab" onclick="switchTab(event, 'activity')">Activity</div>
+        <div class="tab" onclick="switchTab(event, 'profile')">Profile</div>
     </div>
 
     <div class="content" id="content"></div>
@@ -104,7 +104,7 @@
         }
 
         // switch tabs
-        function switchTab(tab) {
+        function switchTab(event, tab) {
             document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
             event.target.classList.add("active");
 
@@ -113,139 +113,242 @@
             if (tab === "activity") loadActivity();
             if (tab === "profile") loadProfile();
 
-            // hide add button in profile
             document.querySelector(".floating-btn").style.display =
                 (tab === "profile") ? "none" : "block";
         }
 
         // 🟣 GROUPS
         async function loadGroups() {
-
-            const res = await fetch(`${API}/groups/user`, {
-                headers: {
-                    "Authorization": token
-                }
-            });
-
-            if (!res.ok) {
-                document.getElementById("content").innerHTML = "Failed to load groups";
-                return;
-            }
-
-            const data = await res.json();
-
-            let html = `<h2>Your Groups</h2>
-                <button class="btn" onclick="createGroup()">+ Create Group</button>`;
-
-            if (!data.groups || data.groups.length === 0) {
-                html += `<p>No groups found</p>`;
-            } else {
-                data.groups.forEach(g => {
-                    html += `<div class="card">${g.group_name}</div>`;
+            try {
+                const res = await fetch(`${API}/groups/user`, {
+                    headers: {
+                        "Authorization": token
+                    }
                 });
-            }
 
-            document.getElementById("content").innerHTML = html;
+                if (res.status === 401 || res.status === 400) {
+                    alert("Session expired. Please login again.");
+                    localStorage.removeItem("token");
+                    window.location.href = "login.html";
+                    return;
+                }
+
+                if (!res.ok) {
+                    document.getElementById("content").innerHTML = "Failed to load groups";
+                    return;
+                }
+
+                const data = await res.json();
+
+                let html = `<h2>Your Groups</h2>
+
+            <div id="groupsContainer"></div>
+
+            <div id="groupForm" style="display:none; margin-top:10px;">
+                <input type="text" id="groupNameInput" placeholder="Group Name" class="input">
+
+                <input type="text" id="memberPhoneInput" placeholder="Add member phone" class="input">
+                <button class="btn" onclick="addTempMember()">Add Member</button>
+
+                <div id="tempMembers"></div>
+
+                <button class="btn" onclick="createGroup()">Create</button>
+            </div>
+
+            <button class="btn" onclick="showCreateGroupForm()">+ Create Group</button>`;
+
+                // ✅ FIRST set base HTML
+                document.getElementById("content").innerHTML = html;
+
+                // ✅ THEN render groups inside container
+                const groupsDiv = document.getElementById("groupsContainer");
+
+                if (!data.groups || data.groups.length === 0) {
+                    groupsDiv.innerHTML = `<p>No groups found</p>`;
+                } else {
+                    let groupHTML = "";
+                    data.groups.forEach(g => {
+                        groupHTML += `<div class="card" onclick="openGroup(${g.group_id})">${g.group_name}</div>`;
+                    });
+                    groupsDiv.innerHTML = groupHTML;
+                }
+
+            } catch (error) {
+                console.log(error);
+                document.getElementById("content").innerHTML = "Error loading groups";
+            }
         }
 
-        // 🟢 FRIENDS (balances)
+        // 🟢 FRIENDS
         async function loadFriends() {
-
-            const res = await fetch(`${API}/balances`, {
-                headers: {
-                    "Authorization": token
-                }
-            });
-
-            if (!res.ok) {
-                document.getElementById("content").innerHTML = "Failed to load balances";
-                return;
-            }
-
-            const data = await res.json();
-
-            let html = `<h2>Balances</h2>`;
-
-            if (!data.breakdown || data.breakdown.length === 0) {
-                html += `<p>No balances</p>`;
-            } else {
-                data.breakdown.forEach(b => {
-                    html += `<div class="card">
-                        ${b.user} :
-                        ${b.you_owe ? "You owe ₹" + b.you_owe : "You get ₹" + b.you_get}
-                     </div>`;
+            try {
+                const res = await fetch(`${API}/balances`, {
+                    headers: {
+                        "Authorization": token
+                    }
                 });
-            }
 
-            document.getElementById("content").innerHTML = html;
+                if (res.status === 401 || res.status === 400) {
+                    alert("Session expired. Please login again.");
+                    localStorage.removeItem("token");
+                    window.location.href = "login.html";
+                    return;
+                }
+
+                if (!res.ok) {
+                    document.getElementById("content").innerHTML = "Failed to load friends";
+                    return;
+                }
+
+                const data = await res.json();
+
+                let html = `<h2>Balances</h2>`;
+
+                if (!data.breakdown || data.breakdown.length === 0) {
+                    html += `<p>No balances</p>`;
+                } else {
+                    data.breakdown.forEach(b => {
+                        html += `<div class="card">
+                    ${b.user} :
+                    ${b.you_owe ? "You owe ₹" + b.you_owe : "You get ₹" + b.you_get}
+                </div>`;
+                    });
+                }
+
+                document.getElementById("content").innerHTML = html;
+
+            } catch (error) {
+                console.log(error);
+                document.getElementById("content").innerHTML = "Error loading balances";
+            }
         }
 
         // 🔵 ACTIVITY
         async function loadActivity() {
-
-            const res = await fetch(`${API}/settlements`, {
-                headers: {
-                    "Authorization": token
-                }
-            });
-
-            if (!res.ok) {
-                document.getElementById("content").innerHTML = "Failed to load activity";
-                return;
-            }
-
-            const data = await res.json();
-
-            let html = `<h2>Activity</h2>`;
-
-            if (!data.settlements || data.settlements.length === 0) {
-                html += `<p>No activity</p>`;
-            } else {
-                data.settlements.forEach(s => {
-                    html += `<div class="card">
-                        ${s.from_user_name} → ${s.to_user_name} : ₹${s.amount}
-                     </div>`;
+            try {
+                const res = await fetch(`${API}/settlements`, {
+                    headers: {
+                        "Authorization": token
+                    }
                 });
-            }
 
-            document.getElementById("content").innerHTML = html;
+                if (res.status === 401 || res.status === 400) {
+                    alert("Session expired. Please login again.");
+                    localStorage.removeItem("token");
+                    window.location.href = "login.html";
+                    return;
+                }
+
+                if (!res.ok) {
+                    document.getElementById("content").innerHTML = "Failed to load activity";
+                    return;
+                }
+
+                const data = await res.json();
+
+                let html = `<h2>Activity</h2>`;
+
+                if (!data.settlements || data.settlements.length === 0) {
+                    html += `<p>No activity</p>`;
+                } else {
+                    data.settlements.forEach(s => {
+                        html += `<div class="card">
+                    ${s.from_user_name} → ${s.to_user_name} : ₹${s.amount}
+                </div>`;
+                    });
+                }
+
+                document.getElementById("content").innerHTML = html;
+
+            } catch (error) {
+                console.log(error);
+                document.getElementById("content").innerHTML = "Error loading activity";
+            }
         }
 
         // ⚫ PROFILE
         async function loadProfile() {
-            const res = await fetch(`${API}/profile`, {
-                headers: {
-                    "Authorization": token
+            try {
+                const res = await fetch(`${API}/profile`, {
+                    headers: {
+                        "Authorization": token
+                    }
+                });
+
+                if (res.status === 401 || res.status === 400) {
+                    alert("Session expired. Please login again.");
+                    localStorage.removeItem("token");
+                    window.location.href = "login.html";
+                    return;
                 }
-            });
 
-            const user = await res.json();
+                if (!res.ok) {
+                    document.getElementById("content").innerHTML = "Failed to load profile";
+                    return;
+                }
 
-            let html = `
-        <h2>Profile</h2>
-        <div class="card">Name: ${user.user_name}</div>
-        <div class="card">Email: ${user.email}</div>
+                const user = await res.json();
 
-        <button class="btn" onclick="logout()">Logout</button>
-    `;
+                let html = `
+            <h2>Profile</h2>
+            <div class="card">Name: ${user.user_name}</div>
+            <div class="card">Email: ${user.email}</div>
 
-            document.getElementById("content").innerHTML = html;
+            <button class="btn" onclick="logout()">Logout</button>`;
+
+                document.getElementById("content").innerHTML = html;
+
+            } catch (error) {
+                console.log(error);
+                document.getElementById("content").innerHTML = "Error loading profile";
+            }
         }
 
         // ➕ Create Group
         async function createGroup() {
-            const name = prompt("Enter group name");
 
-            if (!name) return;
+            const name = document.getElementById("groupNameInput").value;
 
-            await fetch(`${API}/groups`, {
+            if (!name) return alert("Enter group name");
+
+            if (tempMembers.length === 0) {
+                return alert("Add at least one member");
+            }
+
+            // 1️⃣ Create group
+            const res = await fetch(`${API}/groups`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    Authorization: token
+                    "Authorization": token
                 },
                 body: JSON.stringify({ group_name: name })
             });
+
+            const data = await res.json();
+
+            const groupId = data.group_id;
+
+            // 2️⃣ Add members
+            for (let phone of tempMembers) {
+                await fetch(`${API}/groups/add-member`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": token
+                    },
+                    body: JSON.stringify({
+                        group_id: groupId,
+                        phone_no: phone
+                    })
+                });
+            }
+
+            alert("Group created successfully");
+
+            // reset form
+            tempMembers = [];
+            document.getElementById("groupForm").style.display = "none";
 
             loadGroups();
         }
@@ -261,7 +364,34 @@
             window.location.href = "login.html";
         }
 
-        // load default
+        function openGroup(id) {
+            window.location.href = `group.html?group_id=${id}`;
+        }
+
+        let tempMembers = [];
+
+        function showCreateGroupForm() {
+            document.getElementById("groupForm").style.display = "block";
+        }
+
+        function addTempMember() {
+            const phone = document.getElementById("memberPhoneInput").value;
+
+            if (!phone) return alert("Enter phone number");
+
+            tempMembers.push(phone);
+
+            let html = "";
+            tempMembers.forEach(p => {
+                html += `<div>${p}</div>`;
+            });
+
+            document.getElementById("tempMembers").innerHTML = html;
+
+            document.getElementById("memberPhoneInput").value = "";
+        }
+
+        // default load
         loadGroups();
 
     </script>

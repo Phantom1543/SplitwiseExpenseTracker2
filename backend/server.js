@@ -117,21 +117,33 @@ app.post("/login", async (req, res) => {
 
 const authenticate = (req, res, next) => {
 
-    const token = req.headers.authorization;
+    let token = req.headers.authorization;
+
+    console.log("RAW TOKEN:", token);   // 👈 ADD
+    console.log("SECRET:", process.env.JWT_SECRET); // 👈 ADD
 
     if (!token) {
         return res.status(401).json({ message: "Access denied" });
     }
 
+    if (token.startsWith("Bearer ")) {
+        token = token.split(" ")[1];
+    }
+
+    console.log("FINAL TOKEN:", token); // 👈 ADD
+
     try {
 
         const verified = jwt.verify(token, process.env.JWT_SECRET);
+
+        console.log("VERIFIED:", verified); // 👈 ADD
 
         req.user = verified;
 
         next();
 
     } catch (error) {
+        console.log("JWT ERROR:", error); // 👈 IMPORTANT
         res.status(400).json({ message: "Invalid token" });
     }
 };
@@ -481,6 +493,31 @@ app.post("/groups/add-member", authenticate, async (req, res) => {
         });
 
     } catch (error) {
+        return res.status(500).json({ message: "Server error" });
+    }
+});
+
+app.get("/groups/user", authenticate, async (req, res) => {
+    try {
+
+        console.log("ROUTE HIT");
+
+        const userId = req.user.user_id;
+
+        const [groups] = await db.query(
+            `SELECT g.group_id, g.group_name
+             FROM group_members gm
+             JOIN group_s g ON gm.group_id = g.group_id
+             WHERE gm.user_id = ?
+             ORDER BY g.group_id DESC`,
+            [userId]
+        );
+
+        // ✅ ALWAYS return groups (even empty)
+        return res.json({ groups });
+
+    } catch (error) {
+        console.log("GROUP ERROR:", error);
         return res.status(500).json({ message: "Server error" });
     }
 });
@@ -1091,6 +1128,14 @@ app.get("/balances", authenticate, async (req, res) => {
 
         const userIds = Object.keys(balanceMap);
 
+        // ✅ FIX: handle empty case
+        if (userIds.length === 0) {
+            return res.json({
+                total_balance: 0,
+                breakdown: []
+            });
+        }
+
         const [users] = await db.query(
             `SELECT user_id, user_name FROM users WHERE user_id IN (?)`,
             [userIds]
@@ -1106,9 +1151,9 @@ app.get("/balances", authenticate, async (req, res) => {
         return res.json({ breakdown });
 
     } catch (error) {
-    console.log("BALANCE ERROR:", error);
-    return res.status(500).json({ message: "Server error" });
-}
+        console.log("BALANCE ERROR:", error);
+        return res.status(500).json({ message: "Server error" });
+    }
 });
 
 app.put("/expenses/:id", authenticate, async (req, res) => {
@@ -1227,29 +1272,6 @@ app.get("/groups/:group_id/members", authenticate, async (req, res) => {
         return res.json({ members });
 
     } catch (error) {
-        return res.status(500).json({ message: "Server error" });
-    }
-});
-
-app.get("/groups/user", authenticate, async (req, res) => {
-    try {
-
-        console.log("TOKEN:", req.headers.authorization);
-
-        const userId = req.user.user_id;
-
-        const [groups] = await db.query(
-            `SELECT g.group_id, g.group_name
-             FROM group_members gm
-             JOIN group_s g ON gm.group_id = g.group_id
-             WHERE gm.user_id = ?`,
-            [userId]
-        );
-
-        return res.json({ groups });
-
-    } catch (error) {
-        console.log("GROUP ERROR:", error);
         return res.status(500).json({ message: "Server error" });
     }
 });
