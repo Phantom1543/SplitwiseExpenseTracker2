@@ -1,0 +1,68 @@
+create database splitwise;
+use splitwise;
+
+create table users(
+user_id int auto_increment primary key,
+user_name varchar(50) not null,
+email varchar(20) unique not null,
+phone_no bigint not null,
+user_password varchar(20) not null
+);
+
+alter table users modify column email varchar(50);
+ALTER TABLE users MODIFY user_password VARCHAR(255);
+
+ALTER TABLE users
+ADD reset_otp VARCHAR(10),
+ADD otp_expiry DATETIME;
+
+create table group_s(
+group_id int auto_increment primary key,
+group_name varchar(20) not null,
+group_members int not null,
+created_by int not null,
+created_at datetime default current_timestamp,
+foreign key(group_members) references users(user_id)on delete cascade,
+foreign key(created_by) references users(user_id)on delete cascade
+);
+
+create table group_members(
+group_id int not null,
+user_id int not null,
+group_role varchar(20) default "Member",
+foreign key(group_id) references group_s(group_id)on delete cascade,
+foreign key(user_id) references users(user_id)on delete cascade
+);
+
+create table expense(
+expense_id int auto_increment primary key,
+group_id int not null,
+paid_by int not null,
+paid_for varchar(20) not null,
+amount int not null, 
+exp_description text,
+exp_date datetime default current_timestamp,
+foreign key(group_id) references group_s(group_id)on delete cascade,
+foreign key(paid_by) references users(user_id)on delete cascade
+);
+
+create table expense_split(
+split_id int auto_increment primary key,
+expense_id int not null,
+group_id int not null,
+user_id int not null,
+amount_owed int not null,
+foreign key(group_id) references group_s(group_id) on delete cascade,
+foreign key(user_id) references users(user_id)on delete cascade,
+foreign key(expense_id) references expense(expense_id) on delete cascade
+);
+
+create table settlements(
+settlement_id int auto_increment primary key,
+from_user int not null,
+to_user int not null,
+amount int not null,
+settle_date datetime default current_timestamp,
+foreign key(from_user) references users(user_id)on delete cascade,
+foreign key(to_user) references users(user_id)on delete cascade
+);
