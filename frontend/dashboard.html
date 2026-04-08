@@ -168,7 +168,11 @@
                 } else {
                     let groupHTML = "";
                     data.groups.forEach(g => {
-                        groupHTML += `<div class="card" onclick="openGroup(${g.group_id})">${g.group_name}</div>`;
+                        groupHTML += `
+                        <div class="card">
+                            <div onclick="openGroup(${g.group_id})">${g.group_name}</div>
+                            <button class="btn" onclick="deleteGroup(${g.group_id})">Delete</button>
+                        </div>`;
                     });
                     groupsDiv.innerHTML = groupHTML;
                 }
@@ -177,6 +181,31 @@
                 console.log(error);
                 document.getElementById("content").innerHTML = "Error loading groups";
             }
+        }
+
+        async function deleteGroup(groupId) {
+            const confirmDelete = confirm("Delete this group?");
+            if (!confirmDelete) return;
+
+            const res = await fetch(`${API}/groups/${groupId}`, {
+                method: "DELETE",
+                headers: {
+                    "Authorization": token
+                }
+            });
+
+            let data;
+            try {
+                data = await res.json();
+            } catch {
+                const text = await res.text();
+                console.log(text);
+                alert("Server error");
+                return;
+            }
+            alert(data.message);
+
+            loadGroups(); // refresh
         }
 
         // 🟢 FRIENDS

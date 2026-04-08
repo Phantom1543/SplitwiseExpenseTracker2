@@ -1,247 +1,381 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8">
-<title>Group Details</title>
+    <meta charset="UTF-8">
+    <title>Group Details</title>
 
-<style>
-body {
-    font-family: Arial;
-    margin: 0;
-    background: #f5f5f5;
-}
+    <style>
+        body {
+            font-family: Arial;
+            margin: 0;
+            background: #f5f5f5;
+        }
 
-.header {
-    background: #2ecc71;
-    color: white;
-    padding: 15px;
-    text-align: center;
-    font-size: 20px;
-}
+        .header {
+            background: #2ecc71;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-size: 20px;
+        }
 
-.section {
-    padding: 15px;
-}
+        .section {
+            padding: 15px;
+        }
 
-.card {
-    background: white;
-    padding: 10px;
-    margin: 10px 0;
-    border-radius: 8px;
-}
+        .card {
+            background: white;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 8px;
+        }
 
-.btn {
-    padding: 10px;
-    margin: 5px;
-    background: #2ecc71;
-    color: white;
-    border: none;
-    border-radius: 5px;
-    cursor: pointer;
-}
+        .btn {
+            padding: 10px;
+            margin: 5px;
+            background: #2ecc71;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
 
-.input {
-    padding: 8px;
-    width: 100%;
-    margin: 5px 0;
-}
-</style>
+        .input {
+            padding: 8px;
+            width: 100%;
+            margin: 5px 0;
+        }
+    </style>
 </head>
 
 <body>
 
-<div class="header" id="groupName">Group</div>
+    <div class="header" id="groupName">Group</div>
 
-<div class="section">
-    <h3>Members</h3>
-    <div id="members"></div>
+    <div class="section">
+        <h3>Members</h3>
+        <div id="members"></div>
 
-    <input type="text" id="phoneInput" class="input" placeholder="Enter phone number">
-    <button class="btn" onclick="addMember()">Add Member</button>
-</div>
+        <div id="addMemberBox" style="display:none;">
+            <input type="text" id="memberPhoneInput" placeholder="Add member phone" class="input">
+            <button class="btn" onclick="addMember()">Add</button>
+        </div>
 
-<div class="section">
-    <h3>Expenses</h3>
-    <div id="expenses"></div>
-</div>
+        <button id="addMemberBtn" class="btn" onclick="showAddMemberBox()">Add Member</button>
+    </div>
 
-<div class="section">
-    <h3>Add Expense</h3>
+    <!-- ✅ NEW SECTION ADDED HERE -->
+    <div class="section">
+        <h3>Balances</h3>
+        <div id="balances"></div>
+    </div>
 
-    <input type="number" id="amount" class="input" placeholder="Amount">
-    <input type="text" id="description" class="input" placeholder="Description">
+    <div class="section">
+        <h3>Expenses</h3>
+        <div id="expenses"></div>
+    </div>
 
-    <label>Split Type:</label>
-    <select id="splitType" class="input">
-        <option value="equal">Equal</option>
-        <option value="custom">Custom</option>
-    </select>
+    <div class="section">
+        <h3>Add Expense</h3>
 
-    <div id="memberCheckboxes"></div>
+        <input type="number" id="amount" class="input" placeholder="Amount">
+        <input type="text" id="description" class="input" placeholder="Description">
 
-    <button class="btn" onclick="addExpense()">Add Expense</button>
-</div>
+        <label>Split Type:</label>
+        <select id="splitType" class="input">
+            <option value="equal">Equal</option>
+            <option value="custom">Custom</option>
+        </select>
 
-<script>
+        <div id="memberCheckboxes"></div>
 
-const API = "http://localhost:3000";
-const token = localStorage.getItem("token");
+        <button class="btn" onclick="addExpense()">Add Expense</button>
+    </div>
 
-// 🔐 redirect if not logged in
-if (!token) {
-    window.location.href = "login.html";
-}
+    <script>
 
-// get group id from URL
-const params = new URLSearchParams(window.location.search);
-const groupId = params.get("group_id");
+        const API = "http://localhost:3000";
+        const token = localStorage.getItem("token");
 
-// load everything
-loadGroup();
-loadMembers();
-loadExpenses();
+        // 🔐 redirect if not logged in
+        if (!token) {
+            window.location.href = "login.html";
+        }
 
+        // get group id from URL
+        const params = new URLSearchParams(window.location.search);
+        const groupId = params.get("group_id");
 
-// 🟣 Load Group Info
-async function loadGroup() {
-    const res = await fetch(`${API}/groups/${groupId}`, {
-        headers: { "Authorization": token }
-    });
-
-    if (!res.ok) return;
-
-    const data = await res.json();
-
-    document.getElementById("groupName").innerText = data.group.group_name;
-}
+        // load everything
+        loadGroup();
+        loadMembers();
+        loadBalances();
+        loadExpenses();
 
 
-// 🟢 Load Members
-async function loadMembers() {
-    const res = await fetch(`${API}/groups/${groupId}/members`, {
-        headers: { "Authorization": token }
-    });
+        // 🟣 Load Group Info
+        async function loadGroup() {
+            const res = await fetch(`${API}/groups/${groupId}`, {
+                headers: { "Authorization": token }
+            });
 
-    const data = await res.json();
+            if (!res.ok) return;
 
-    let html = "";
-    let checkboxes = "";
+            const data = await res.json();
 
-    data.members.forEach(m => {
-        html += `<div class="card">${m.user_name} (${m.group_role})</div>`;
+            document.getElementById("groupName").innerText = data.group.group_name;
+        }
 
-        checkboxes += `
+        let memberMap = {};
+
+        // 🟢 Load Members
+        async function loadMembers() {
+            const res = await fetch(`${API}/groups/${groupId}/members`, {
+                headers: { "Authorization": token }
+            });
+
+            const data = await res.json();
+
+            memberMap = {}; // reset
+
+            data.members.forEach(m => {
+                memberMap[m.user_name] = m.user_id;
+            });
+
+            let html = "";
+            let checkboxes = "";
+
+            // ✅ get current user id from token
+            const currentUserId = JSON.parse(atob(token.split('.')[1])).user_id;
+
+            // ✅ check if current user is admin
+            const isAdmin = data.members.some(m =>
+                m.user_id === currentUserId && m.group_role === "Admin"
+            );
+
+            data.members.forEach(m => {
+
+                html += `<div class="card">
+            ${m.user_name} (${m.group_role})
+
+            ${m.group_role !== "Admin" && isAdmin
+                        ? `<button onclick="removeMember(${m.user_id})">Remove</button>`
+                        : ""}
+        </div>`;
+
+                checkboxes += `
             <label>
                 <input type="checkbox" value="${m.user_id}">
                 ${m.user_name}
             </label><br>
         `;
-    });
+            });
 
-    document.getElementById("members").innerHTML = html;
-    document.getElementById("memberCheckboxes").innerHTML = checkboxes;
-}
+            document.getElementById("members").innerHTML = html;
+            document.getElementById("memberCheckboxes").innerHTML = checkboxes;
+        }
 
+        async function loadBalances() {
+            const res = await fetch(`${API}/groups/${groupId}/balances`, {
+                headers: { "Authorization": token }
+            });
 
-// 🔵 Load Expenses
-async function loadExpenses() {
-    const res = await fetch(`${API}/groups/${groupId}/expenses`, {
-        headers: { "Authorization": token }
-    });
+            const data = await res.json();
 
-    const data = await res.json();
+            let html = "";
 
-    let html = "";
+            if (!data.settlements || data.settlements.length === 0) {
+                html = "<p>No balances</p>";
+            } else {
+                const currentUserId = JSON.parse(atob(token.split('.')[1])).user_id;
 
-    data.expenses.forEach(e => {
-        html += `
+                data.settlements.forEach(s => {
+
+                    const fromId = memberMap[s.from];
+                    const toId = memberMap[s.to];
+
+                    const canSettle = currentUserId === fromId || currentUserId === toId;
+
+                    html += `
+                        <div class="card">
+                            ${s.from} → ${s.to} ₹${s.amount}
+
+                            ${canSettle
+                            ? `<button onclick="settle('${s.from}', '${s.to}', ${s.amount})">Settle</button>`
+                            : ""}
+                        </div>
+                    `;
+                });
+            }
+
+            document.getElementById("balances").innerHTML = html;
+        }
+
+        // 🔵 Load Expenses
+        async function loadExpenses() {
+            const res = await fetch(`${API}/groups/${groupId}/expenses`, {
+                headers: { "Authorization": token }
+            });
+
+            const data = await res.json();
+
+            let html = "";
+
+            data.expenses.forEach(e => {
+                html += `
             <div class="card">
                 ${e.exp_description} - ₹${e.amount}<br>
                 Paid by: ${e.paid_by_name}
             </div>
         `;
-    });
-
-    document.getElementById("expenses").innerHTML = html;
-}
-
-
-// ➕ Add Member
-async function addMember() {
-    const phone = document.getElementById("phoneInput").value;
-
-    if (!phone) return alert("Enter phone number");
-
-    const res = await fetch(`${API}/groups/add-member`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": token
-        },
-        body: JSON.stringify({
-            group_id: groupId,
-            phone_no: phone
-        })
-    });
-
-    const data = await res.json();
-    alert(data.message);
-
-    loadMembers();
-}
-
-
-// ➕ Add Expense
-async function addExpense() {
-
-    const amount = document.getElementById("amount").value;
-    const description = document.getElementById("description").value;
-    const splitType = document.getElementById("splitType").value;
-
-    const checked = document.querySelectorAll("#memberCheckboxes input:checked");
-
-    if (!amount || checked.length === 0) {
-        return alert("Fill all fields");
-    }
-
-    let members = [];
-
-    if (splitType === "equal") {
-        checked.forEach(c => {
-            members.push({ user_id: Number(c.value) });
-        });
-    } else {
-        checked.forEach(c => {
-            const amt = prompt(`Enter amount for user ${c.value}`);
-            members.push({
-                user_id: Number(c.value),
-                amount_owed: Number(amt)
             });
-        });
-    }
 
-    const res = await fetch(`${API}/expenses`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": token
-        },
-        body: JSON.stringify({
-            group_id: groupId,
-            amount: Number(amount),
-            exp_description: description,
-            split_type: splitType,
-            members: members
-        })
-    });
+            document.getElementById("expenses").innerHTML = html;
+        }
 
-    const data = await res.json();
-    alert(data.message);
 
-    loadExpenses();
-}
+        // ➕ Add Member
+        async function addMember() {
+            const phone = document.getElementById("memberPhoneInput").value;
 
-</script>
+            if (!phone) return alert("Enter phone number");
+
+            const res = await fetch(`${API}/groups/add-member`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": token
+                },
+                body: JSON.stringify({
+                    group_id: groupId,
+                    phone_no: phone
+                })
+            });
+
+            const data = await res.json();
+            alert(data.message);
+
+            loadMembers();
+
+            // ✅ ADD THESE 2 LINES
+            document.getElementById("memberPhoneInput").value = "";
+            document.getElementById("addMemberBox").style.display = "none";
+            document.getElementById("addMemberBtn").style.display = "block";
+        }
+
+
+        // ➕ Add Expense
+        async function addExpense() {
+
+            const amount = document.getElementById("amount").value;
+            const description = document.getElementById("description").value;
+            const splitType = document.getElementById("splitType").value;
+
+            const checked = document.querySelectorAll("#memberCheckboxes input:checked");
+
+            if (!amount || checked.length === 0) {
+                return alert("Fill all fields");
+            }
+
+            let members = [];
+
+            if (splitType === "equal") {
+                checked.forEach(c => {
+                    members.push({ user_id: Number(c.value) });
+                });
+            } else {
+                checked.forEach(c => {
+                    const amt = prompt(`Enter amount for user ${c.value}`);
+                    members.push({
+                        user_id: Number(c.value),
+                        amount_owed: Number(amt)
+                    });
+                });
+            }
+
+            const res = await fetch(`${API}/expenses`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": token
+                },
+                body: JSON.stringify({
+                    group_id: groupId,
+                    amount: Number(amount),
+                    exp_description: description,
+                    split_type: splitType,
+                    members: members
+                })
+            });
+
+            const data = await res.json();
+            alert(data.message);
+
+            loadExpenses();
+        }
+
+        function showAddMemberBox() {
+            document.getElementById("addMemberBox").style.display = "block";
+
+            // ✅ hide button
+            document.getElementById("addMemberBtn").style.display = "none";
+        }
+
+        async function removeMember(userId) {
+            const confirmRemove = confirm("Remove this member?");
+            if (!confirmRemove) return;
+
+            const res = await fetch(`${API}/groups/remove-member`, {
+                method: "DELETE",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": token
+                },
+                body: JSON.stringify({
+                    group_id: groupId,
+                    user_id: userId
+                })
+            });
+
+            const data = await res.json();
+            alert(data.message);
+
+            loadMembers();
+            loadBalances();
+        }
+
+        async function settle(fromName, toName, amount) {
+
+            const confirmSettle = confirm(`Settle ₹${amount}?`);
+            if (!confirmSettle) return;
+
+            // ⚠️ you need user IDs, not names
+            const fromUser = getUserIdByName(fromName);
+            const toUser = getUserIdByName(toName);
+
+            const res = await fetch(`${API}/settlements`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": token
+                },
+                body: JSON.stringify({
+                    from_user: fromUser,
+                    to_user: toUser,
+                    amount: amount,
+                    group_id: groupId
+                })
+            });
+
+            const data = await res.json();
+            alert(data.message);
+
+            loadBalances(); // refresh
+        }
+
+    </script>
 
 </body>
+
 </html>

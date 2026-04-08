@@ -961,6 +961,7 @@ app.get("/settlements", authenticate, async (req, res) => {
         return res.json({ settlements });
 
     } catch (error) {
+        console.log("SETTLEMENT ERROR:", error);
         return res.status(500).json({ message: "Server error" });
     }
 });
@@ -1001,6 +1002,27 @@ app.get("/groups/:group_id/balances", authenticate, async (req, res) => {
 
         // 3️⃣ Build balance map
         const balanceMap = {};
+
+        // ✅ APPLY SETTLEMENTS (IMPORTANT FIX)
+        const [settlementRows] = await db.query(
+            `SELECT from_user, to_user, amount FROM settlements
+            WHERE from_user IN (
+                SELECT user_id FROM group_members WHERE group_id = ?
+            )
+            AND to_user IN (
+                SELECT user_id FROM group_members WHERE group_id = ?
+            )`,
+            [group_id, group_id]
+        );
+
+        settlementRows.forEach(s => {
+            if (balanceMap[s.from_user] !== undefined) {
+                balanceMap[s.from_user] += s.amount;
+            }
+            if (balanceMap[s.to_user] !== undefined) {
+                balanceMap[s.to_user] -= s.amount;
+            }
+        });
 
         paid.forEach(p => {
             balanceMap[p.user_id] = (balanceMap[p.user_id] || 0) + p.total_paid;
@@ -1227,6 +1249,23 @@ app.delete("/groups/remove-member", authenticate, async (req, res) => {
             return res.status(403).json({ message: "Only admin can remove members" });
         }
 
+        // ✅ check pending settlements
+        const [balances] = await db.query(
+            `SELECT SUM(amount_owed) AS total
+             FROM expense_split
+             WHERE group_id = ?`,
+            [group_id]
+        );
+
+        if (balances[0].total && balances[0].total > 0) {
+            return res.json({ message: "Cannot remove member. Settlements pending." });
+        }
+
+        // ✅ prevent admin removing themselves
+        if (user_id === req.user.user_id) {
+            return res.json({ message: "Admin cannot remove themselves" });
+        }
+
         await db.query(
             "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
             [group_id, user_id]
@@ -1273,6 +1312,55 @@ app.get("/groups/:group_id/members", authenticate, async (req, res) => {
 
     } catch (error) {
         return res.status(500).json({ message: "Server error" });
+    }
+});
+
+app.delete("/groups/:id", authenticate, async (req, res) => {
+    const connection = await db.getConnection();
+
+    try {
+        const groupId = req.params.id;
+
+        // 1️⃣ Check if user is admin
+        const [admin] = await connection.query(
+            "SELECT group_role FROM group_members WHERE group_id = ? AND user_id = ?",
+            [groupId, req.user.user_id]
+        );
+
+        if (admin.length === 0 || admin[0].group_role !== "Admin") {
+            return res.status(403).json({ message: "Only admin can delete group" });
+        }
+
+        // 2️⃣ Check pending balances
+        const [balances] = await connection.query(
+            `SELECT SUM(amount_owed) AS total
+             FROM expense_split
+             WHERE group_id = ?`,
+            [groupId]
+        );
+
+        if (balances[0].total && balances[0].total > 0) {
+            return res.json({ message: "Cannot delete group. Settlements pending." });
+        }
+
+        await connection.beginTransaction();
+
+        // 3️⃣ Delete related data
+        await connection.query("DELETE FROM expense_split WHERE group_id = ?", [groupId]);
+        await connection.query("DELETE FROM expense WHERE group_id = ?", [groupId]);
+        await connection.query("DELETE FROM group_members WHERE group_id = ?", [groupId]);
+        await connection.query("DELETE FROM group_s WHERE group_id = ?", [groupId]);
+
+        await connection.commit();
+
+        return res.json({ message: "Group deleted successfully" });
+
+    } catch (error) {
+        await connection.rollback();
+        console.log(error);
+        return res.status(500).json({ message: "Server error" });
+    } finally {
+        connection.release();
     }
 });
 
