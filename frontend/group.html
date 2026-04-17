@@ -51,11 +51,27 @@
 
 <body>
 
-    <div class="header" id="groupName">Group</div>
+    <div class="header" style="display:flex; justify-content:space-between; align-items:center;">
+
+        <div id="groupName">Group</div>
+
+        <div id="groupActions"></div>
+
+    </div>
 
     <div class="section">
         <h3>Members</h3>
         <div id="members"></div>
+
+        <div id="adminSelectBox" style="display:none;">
+            <label>Select new admin:</label>
+            <select id="newAdminSelect" class="input"></select>
+
+            <!-- ✅ NEW BUTTON -->
+            <button onclick="changeAdmin()" class="btn" style="margin-top:5px;">
+                Change Admin
+            </button>
+        </div>
 
         <div id="addMemberBox" style="display:none;">
             <input type="text" id="memberPhoneInput" placeholder="Add member phone" class="input">
@@ -83,17 +99,19 @@
         <input type="text" id="description" class="input" placeholder="Description">
 
         <label>Split Type:</label>
-        <select id="splitType" class="input">
+        <select id="splitType" class="input" onchange="handleSplitType()">
             <option value="equal">Equal</option>
             <option value="custom">Custom</option>
         </select>
 
         <div id="memberCheckboxes"></div>
+        <div id="customAmounts"></div>
 
         <button class="btn" onclick="addExpense()">Add Expense</button>
     </div>
 
     <script>
+        let memberList = [];
 
         const API = "http://localhost:3000";
         const token = localStorage.getItem("token");
@@ -106,6 +124,7 @@
         // get group id from URL
         const params = new URLSearchParams(window.location.search);
         const groupId = params.get("group_id");
+        let memberMap = {};
 
         // load everything
         loadGroup();
@@ -124,11 +143,27 @@
 
             const data = await res.json();
 
+            const currentUserId = JSON.parse(atob(token.split('.')[1])).user_id;
+
+            const isAdmin = data.members.some(m =>
+                m.user_id === currentUserId && m.group_role === "Admin"
+            );
+
+            // ✅ ALWAYS KEEP DROPDOWN HIDDEN INITIALLY
+            document.getElementById("adminSelectBox").style.display = "none";
+
+            // ✅ group name
             document.getElementById("groupName").innerText = data.group.group_name;
+
+            // ✅ buttons
+            document.getElementById("groupActions").innerHTML = `
+                ${isAdmin
+                    ? `<button onclick="showAdminDropdown()" class="btn">Change Admin</button>`
+                    : ""}
+
+                <button onclick="leaveGroup()" class="btn">Leave</button>
+            `;
         }
-
-        let memberMap = {};
-
         // 🟢 Load Members
         async function loadMembers() {
             const res = await fetch(`${API}/groups/${groupId}/members`, {
@@ -136,9 +171,21 @@
             });
 
             const data = await res.json();
+            memberList = data.members;
 
-            memberMap = {}; // reset
+            // ✅ fill dropdown
+            let options = '<option value="">Select member</option>';
 
+            data.members.forEach(m => {
+                if (m.group_role !== "Admin") {
+                    options += `<option value="${m.user_id}">${m.user_name}</option>`;
+                }
+            });
+
+            document.getElementById("newAdminSelect").innerHTML = options;
+
+            // ✅ reset + build member map
+            memberMap = {};
             data.members.forEach(m => {
                 memberMap[m.user_name] = m.user_id;
             });
@@ -146,10 +193,10 @@
             let html = "";
             let checkboxes = "";
 
-            // ✅ get current user id from token
+            // ✅ get current user id
             const currentUserId = JSON.parse(atob(token.split('.')[1])).user_id;
 
-            // ✅ check if current user is admin
+            // ✅ check admin
             const isAdmin = data.members.some(m =>
                 m.user_id === currentUserId && m.group_role === "Admin"
             );
@@ -159,14 +206,15 @@
                 html += `<div class="card">
             ${m.user_name} (${m.group_role})
 
-            ${m.group_role !== "Admin" && isAdmin
+            ${isAdmin && m.group_role !== "Admin"
                         ? `<button onclick="removeMember(${m.user_id})">Remove</button>`
-                        : ""}
+                        : ""
+                    }
         </div>`;
 
                 checkboxes += `
             <label>
-                <input type="checkbox" value="${m.user_id}">
+                <input type="checkbox" value="${m.user_id}" onchange="handleSplitType()">
                 ${m.user_name}
             </label><br>
         `;
@@ -185,27 +233,36 @@
 
             let html = "";
 
+            const currentUserId = JSON.parse(atob(token.split('.')[1])).user_id;
+
             if (!data.settlements || data.settlements.length === 0) {
                 html = "<p>No balances</p>";
             } else {
-                const currentUserId = JSON.parse(atob(token.split('.')[1])).user_id;
 
                 data.settlements.forEach(s => {
 
-                    const fromId = memberMap[s.from];
-                    const toId = memberMap[s.to];
+                    const isDebtor = currentUserId === s.from_id;
+                    const isCreditor = currentUserId === s.to_id;
 
-                    const canSettle = currentUserId === fromId || currentUserId === toId;
-
-                    html += `
-                        <div class="card">
-                            ${s.from} → ${s.to} ₹${s.amount}
-
-                            ${canSettle
-                            ? `<button onclick="settle('${s.from}', '${s.to}', ${s.amount})">Settle</button>`
-                            : ""}
-                        </div>
-                    `;
+                    if (isDebtor) {
+                        // 👉 YOU OWE
+                        html += `
+                    <div class="card">
+                        You owe ${s.to} ₹${s.amount}
+                        <button onclick="settle(${s.from_id}, ${s.to_id}, ${s.amount})">
+                            Pay
+                        </button>
+                    </div>
+                `;
+                    }
+                    else if (isCreditor) {
+                        // 👉 YOU GET
+                        html += `
+                    <div class="card">
+                        You get ₹${s.amount} from ${s.from}
+                    </div>
+                `;
+                    }
                 });
             }
 
@@ -280,20 +337,35 @@
 
             let members = [];
 
+            // ✅ EQUAL SPLIT
             if (splitType === "equal") {
+
                 checked.forEach(c => {
                     members.push({ user_id: Number(c.value) });
                 });
-            } else {
-                checked.forEach(c => {
-                    const amt = prompt(`Enter amount for user ${c.value}`);
+
+            }
+            // ✅ CUSTOM SPLIT (UPDATED)
+            else {
+
+                const inputs = document.querySelectorAll("#customAmounts input");
+
+                inputs.forEach(input => {
                     members.push({
-                        user_id: Number(c.value),
-                        amount_owed: Number(amt)
+                        user_id: Number(input.dataset.user),
+                        amount_owed: Number(input.value || 0)
                     });
                 });
+
+                // ✅ VALIDATION
+                const total = members.reduce((sum, m) => sum + m.amount_owed, 0);
+
+                if (total !== Number(amount)) {
+                    return alert("Split must match total amount");
+                }
             }
 
+            // ✅ API CALL (same as before)
             const res = await fetch(`${API}/expenses`, {
                 method: "POST",
                 headers: {
@@ -305,7 +377,7 @@
                     amount: Number(amount),
                     exp_description: description,
                     split_type: splitType,
-                    members: members
+                    members
                 })
             });
 
@@ -313,6 +385,7 @@
             alert(data.message);
 
             loadExpenses();
+            loadBalances();
         }
 
         function showAddMemberBox() {
@@ -341,18 +414,14 @@
             const data = await res.json();
             alert(data.message);
 
-            loadMembers();
-            loadBalances();
+            await loadMembers();
+            await loadBalances();
         }
 
-        async function settle(fromName, toName, amount) {
+        async function settle(fromUser, toUser, amount) {
 
             const confirmSettle = confirm(`Settle ₹${amount}?`);
             if (!confirmSettle) return;
-
-            // ⚠️ you need user IDs, not names
-            const fromUser = getUserIdByName(fromName);
-            const toUser = getUserIdByName(toName);
 
             const res = await fetch(`${API}/settlements`, {
                 method: "POST",
@@ -364,6 +433,106 @@
                     from_user: fromUser,
                     to_user: toUser,
                     amount: amount,
+                    group_id: groupId   // ✅ now correct
+                })
+            });
+
+            const data = await res.json();
+            alert(data.message);
+
+            await loadMembers();
+            await loadBalances();
+        }
+
+        function getUserIdByName(name) {
+            return memberMap[name];
+        }
+
+        function handleSplitType() {
+
+            const type = document.getElementById("splitType").value;
+
+            if (type === "custom") {
+                renderCustomInputs();
+            } else {
+                document.getElementById("customAmounts").innerHTML = "";
+            }
+        }
+
+        function renderCustomInputs() {
+
+            const checkboxes = document.querySelectorAll("#memberCheckboxes input:checked");
+
+            let html = "";
+
+            checkboxes.forEach(cb => {
+                const userId = cb.value;
+                const name = cb.parentElement.textContent.trim();
+
+                html += `
+                    <div>
+                        ${name}
+                        <input type="number" placeholder="Amount" 
+                               class="input" data-user="${userId}">
+                    </div>
+                `;
+            });
+
+            document.getElementById("customAmounts").innerHTML = html;
+        }
+
+        async function deleteGroup(groupId) {
+
+            const confirmDelete = confirm("Delete this group?");
+            if (!confirmDelete) return;
+
+            const res = await fetch(`${API}/groups/${groupId}`, {
+                method: "DELETE",
+                headers: {
+                    "Authorization": token
+                }
+            });
+
+            const data = await res.json();
+            alert(data.message);
+
+            // ✅ REDIRECT + FORCE REFRESH
+            window.location.replace("dashboard.html");
+        }
+
+        async function leaveGroup() {
+
+            const confirmLeave = confirm("Are you sure you want to leave this group?");
+            if (!confirmLeave) return;
+
+            const currentUserId = JSON.parse(atob(token.split('.')[1])).user_id;
+
+            const isAdmin = memberList.some(m =>
+                m.user_id === currentUserId && m.group_role === "Admin"
+            );
+
+            if (isAdmin) {
+
+                if (memberList.length === 1) {
+
+                    const confirmDelete = confirm(
+                        "You are the only member. Leaving will permanently delete this group. Continue?"
+                    );
+
+                    if (!confirmDelete) return;
+
+                } else {
+                    return alert("Transfer admin role before leaving");
+                }
+            }
+
+            const res = await fetch(`${API}/groups/leave`, {
+                method: "DELETE",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": token
+                },
+                body: JSON.stringify({
                     group_id: groupId
                 })
             });
@@ -371,7 +540,75 @@
             const data = await res.json();
             alert(data.message);
 
-            loadBalances(); // refresh
+            if (
+                data.message.includes("left") ||
+                data.message.includes("deleted")
+            ) {
+                window.location.replace("dashboard.html");
+            }
+        }
+
+        async function changeAdmin() {
+
+            const newAdminId = document.getElementById("newAdminSelect").value;
+
+            if (!newAdminId) {
+                return alert("Please select a member");
+            }
+
+            const res = await fetch(`${API}/groups/change-admin`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": token
+                },
+                body: JSON.stringify({
+                    group_id: groupId,
+                    new_admin_id: newAdminId
+                })
+            });
+
+            const data = await res.json();
+            alert(data.message);
+
+            // refresh members to show new admin
+            loadMembers();
+        }
+
+        function showAdminDropdown() {
+            const box = document.getElementById("adminSelectBox");
+            box.style.display = box.style.display === "block" ? "none" : "block";
+        }
+
+        async function confirmAdminChange() {
+
+            const newAdminId = document.getElementById("newAdminSelect").value;
+
+            if (!newAdminId) {
+                return alert("Please select a member");
+            }
+
+            const res = await fetch(`${API}/groups/change-admin`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": token
+                },
+                body: JSON.stringify({
+                    group_id: groupId,
+                    new_admin_id: newAdminId
+                })
+            });
+
+            const data = await res.json();
+            alert(data.message);
+
+            // ✅ FIX: hide BEFORE reload
+            document.getElementById("adminSelectBox").style.display = "none";
+            document.getElementById("newAdminSelect").value = "";
+
+            await loadMembers();
+            await loadGroup();
         }
 
     </script>

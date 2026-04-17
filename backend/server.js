@@ -823,15 +823,13 @@ app.get("/expenses/:expense_id", authenticate, async (req, res) => {
 app.post("/settlements", authenticate, async (req, res) => {
     try {
 
-        const fromUser = req.user.user_id;
-        const { to_user, amount, group_id } = req.body;
+        const { from_user, to_user, amount, group_id } = req.body;
 
-        // 1️⃣ Basic validation
-        if (!to_user || !amount) {
-            return res.status(400).json({ message: "to_user and amount are required" });
+        if (!from_user || !to_user || !amount || !group_id) {
+            return res.status(400).json({ message: "Missing required fields" });
         }
 
-        if (fromUser === to_user) {
+        if (from_user === to_user) {
             return res.status(400).json({ message: "Cannot settle with yourself" });
         }
 
@@ -839,50 +837,41 @@ app.post("/settlements", authenticate, async (req, res) => {
             return res.status(400).json({ message: "Amount must be greater than 0" });
         }
 
-        // 2️⃣ Check receiver exists
-        const [users] = await db.query(
-            "SELECT user_id FROM users WHERE user_id = ?",
-            [to_user]
+        // ✅ only debtor can settle
+        if (req.user.user_id !== from_user) {
+            return res.status(403).json({
+                message: "Only debtor can settle"
+            });
+        }
+
+        // ✅ group validation
+        const [groupCheck] = await db.query(
+            `SELECT COUNT(*) AS count
+             FROM group_members 
+             WHERE group_id = ? AND user_id IN (?, ?)`,
+            [group_id, from_user, to_user]
         );
 
-        if (users.length === 0) {
-            return res.status(404).json({ message: "Recipient not found" });
+        if (groupCheck[0].count !== 2) {
+            return res.status(403).json({
+                message: "Both users must be in same group"
+            });
         }
 
-        // 3️⃣ OPTIONAL: If group_id is provided → validate both users are in same group
-        if (group_id) {
-
-            const [groupCheck] = await db.query(
-                `SELECT * FROM group_members 
-                 WHERE group_id = ? AND user_id IN (?, ?)
-                 GROUP BY group_id
-                 HAVING COUNT(DISTINCT user_id) = 2`,
-                [group_id, fromUser, to_user]
-            );
-
-            if (groupCheck.length === 0) {
-                return res.status(403).json({
-                    message: "Both users must be in the same group"
-                });
-            }
-        }
-
-        // 4️⃣ Record settlement
         const [result] = await db.query(
-            `INSERT INTO settlements (from_user, to_user, amount)
-             VALUES (?, ?, ?)`,
-            [fromUser, to_user, amount]
+            `INSERT INTO settlements (from_user, to_user, amount, group_id)
+             VALUES (?, ?, ?, ?)`,
+            [from_user, to_user, amount, group_id]
         );
 
-        return res.status(201).json({
-            message: "Settlement recorded successfully",
+        return res.json({
+            message: "Settlement successful",
             settlement_id: result.insertId
         });
 
     } catch (error) {
-        return res.status(500).json({
-            message: "Server error"
-        });
+        console.log("SETTLEMENT ERROR:", error);
+        return res.status(500).json({ message: "Server error" });
     }
 });
 
@@ -890,23 +879,7 @@ app.get("/groups/:group_id/settlements", authenticate, async (req, res) => {
     try {
 
         const { group_id } = req.params;
-        const userId = req.user.user_id;
 
-        if (!group_id) {
-            return res.status(400).json({ message: "Group ID is required" });
-        }
-
-        // 🔐 Check user belongs to group
-        const [access] = await db.query(
-            "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
-            [group_id, userId]
-        );
-
-        if (access.length === 0) {
-            return res.status(403).json({ message: "Access denied" });
-        }
-
-        // 📊 Get settlements within this group
         const [settlements] = await db.query(
             `SELECT 
                 s.settlement_id,
@@ -917,14 +890,9 @@ app.get("/groups/:group_id/settlements", authenticate, async (req, res) => {
              FROM settlements s
              JOIN users u1 ON s.from_user = u1.user_id
              JOIN users u2 ON s.to_user = u2.user_id
-             WHERE s.from_user IN (
-                SELECT user_id FROM group_members WHERE group_id = ?
-             )
-             AND s.to_user IN (
-                SELECT user_id FROM group_members WHERE group_id = ?
-             )
+             WHERE s.group_id = ?
              ORDER BY s.settle_date DESC`,
-            [group_id, group_id]
+            [group_id]
         );
 
         return res.json({ settlements });
@@ -961,7 +929,7 @@ app.get("/settlements", authenticate, async (req, res) => {
         return res.json({ settlements });
 
     } catch (error) {
-        console.log("SETTLEMENT ERROR:", error);
+        console.log("SETTLEMENT GET ERROR:", error);
         return res.status(500).json({ message: "Server error" });
     }
 });
@@ -972,7 +940,7 @@ app.get("/groups/:group_id/balances", authenticate, async (req, res) => {
         const { group_id } = req.params;
         const userId = req.user.user_id;
 
-        // 🔐 Check access
+        // 🔐 access check
         const [access] = await db.query(
             "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
             [group_id, userId]
@@ -982,57 +950,38 @@ app.get("/groups/:group_id/balances", authenticate, async (req, res) => {
             return res.status(403).json({ message: "Access denied" });
         }
 
-        // 1️⃣ Total paid
-        const [paid] = await db.query(
-            `SELECT paid_by AS user_id, SUM(amount) AS total_paid
-             FROM expense
-             WHERE group_id = ?
-             GROUP BY paid_by`,
-            [group_id]
-        );
-
-        // 2️⃣ Total owed
-        const [owed] = await db.query(
-            `SELECT user_id, SUM(amount_owed) AS total_owed
-             FROM expense_split
-             WHERE group_id = ?
-             GROUP BY user_id`,
-            [group_id]
-        );
-
-        // 3️⃣ Build balance map
+        // ✅ CORRECT BALANCE CALCULATION
         const balanceMap = {};
 
-        // ✅ APPLY SETTLEMENTS (IMPORTANT FIX)
+        const [splits] = await db.query(
+            `SELECT e.paid_by, es.user_id, es.amount_owed
+             FROM expense e
+             JOIN expense_split es ON e.expense_id = es.expense_id
+             WHERE e.group_id = ?`,
+            [group_id]
+        );
+
+        splits.forEach(s => {
+            if (s.paid_by !== s.user_id) {
+                balanceMap[s.paid_by] = (balanceMap[s.paid_by] || 0) + s.amount_owed;
+                balanceMap[s.user_id] = (balanceMap[s.user_id] || 0) - s.amount_owed;
+            }
+        });
+
+        // ✅ APPLY SETTLEMENTS
         const [settlementRows] = await db.query(
-            `SELECT from_user, to_user, amount FROM settlements
-            WHERE from_user IN (
-                SELECT user_id FROM group_members WHERE group_id = ?
-            )
-            AND to_user IN (
-                SELECT user_id FROM group_members WHERE group_id = ?
-            )`,
-            [group_id, group_id]
+            `SELECT from_user, to_user, amount 
+             FROM settlements
+             WHERE group_id = ?`,
+            [group_id]
         );
 
         settlementRows.forEach(s => {
-            if (balanceMap[s.from_user] !== undefined) {
-                balanceMap[s.from_user] += s.amount;
-            }
-            if (balanceMap[s.to_user] !== undefined) {
-                balanceMap[s.to_user] -= s.amount;
-            }
+            balanceMap[s.from_user] += s.amount;
+            balanceMap[s.to_user] -= s.amount;
         });
 
-        paid.forEach(p => {
-            balanceMap[p.user_id] = (balanceMap[p.user_id] || 0) + p.total_paid;
-        });
-
-        owed.forEach(o => {
-            balanceMap[o.user_id] = (balanceMap[o.user_id] || 0) - o.total_owed;
-        });
-
-        // 4️⃣ Get users
+        // users
         const [users] = await db.query(
             `SELECT u.user_id, u.user_name
              FROM group_members gm
@@ -1047,20 +996,14 @@ app.get("/groups/:group_id/balances", authenticate, async (req, res) => {
             balance: balanceMap[u.user_id] || 0
         }));
 
-        // 🔥 5️⃣ OPTIMIZATION LOGIC (who pays whom)
-
-        let creditors = [];
-        let debtors = [];
-
-        balances.forEach(u => {
-            if (u.balance > 0) {
-                creditors.push({ ...u });
-            } else if (u.balance < 0) {
-                debtors.push({ ...u });
-            }
-        });
-
+        // ✅ FINAL SETTLEMENT LOGIC
         const settlements = [];
+
+        let creditors = balances.filter(u => u.balance > 0).map(u => ({ ...u }));
+        let debtors = balances.filter(u => u.balance < 0).map(u => ({ ...u }));
+
+        creditors.sort((a, b) => b.balance - a.balance);
+        debtors.sort((a, b) => a.balance - b.balance);
 
         let i = 0, j = 0;
 
@@ -1069,7 +1012,7 @@ app.get("/groups/:group_id/balances", authenticate, async (req, res) => {
             let debtor = debtors[i];
             let creditor = creditors[j];
 
-            const amount = Math.min(
+            let amount = Math.min(
                 Math.abs(debtor.balance),
                 creditor.balance
             );
@@ -1077,100 +1020,19 @@ app.get("/groups/:group_id/balances", authenticate, async (req, res) => {
             settlements.push({
                 from: debtor.user_name,
                 to: creditor.user_name,
+                from_id: debtor.user_id,
+                to_id: creditor.user_id,
                 amount: amount
             });
 
             debtor.balance += amount;
             creditor.balance -= amount;
 
-            if (debtor.balance === 0) i++;
-            if (creditor.balance === 0) j++;
+            if (Math.abs(debtor.balance) < 0.01) i++;
+            if (creditor.balance < 0.01) j++;
         }
 
-        return res.json({
-            balances,
-            settlements   // 🔥 THIS IS THE MAIN FEATURE
-        });
-
-    } catch (error) {
-        return res.status(500).json({ message: "Server error" });
-    }
-});
-
-app.get("/balances", authenticate, async (req, res) => {
-    try {
-
-        const userId = req.user.user_id;
-
-        // 1️⃣ Expense-based balances
-        const [paid] = await db.query(
-            `SELECT es.user_id, SUM(es.amount_owed) AS amount
-             FROM expense e
-             JOIN expense_split es ON e.expense_id = es.expense_id
-             WHERE e.paid_by = ? AND es.user_id != ?
-             GROUP BY es.user_id`,
-            [userId, userId]
-        );
-
-        const [owed] = await db.query(
-            `SELECT e.paid_by AS user_id, SUM(es.amount_owed) AS amount
-             FROM expense_split es
-             JOIN expense e ON es.expense_id = e.expense_id
-             WHERE es.user_id = ? AND e.paid_by != ?
-             GROUP BY e.paid_by`,
-            [userId, userId]
-        );
-
-        const balanceMap = {};
-
-        paid.forEach(p => {
-            balanceMap[p.user_id] = (balanceMap[p.user_id] || 0) + p.amount;
-        });
-
-        owed.forEach(o => {
-            balanceMap[o.user_id] = (balanceMap[o.user_id] || 0) - o.amount;
-        });
-
-        // 🔥 2️⃣ APPLY SETTLEMENTS
-        const [settlements] = await db.query(
-            `SELECT from_user, to_user, amount FROM settlements
-             WHERE from_user = ? OR to_user = ?`,
-            [userId, userId]
-        );
-
-        settlements.forEach(s => {
-            if (s.from_user === userId) {
-                // you paid someone
-                balanceMap[s.to_user] = (balanceMap[s.to_user] || 0) + s.amount;
-            } else {
-                // you received
-                balanceMap[s.from_user] = (balanceMap[s.from_user] || 0) - s.amount;
-            }
-        });
-
-        const userIds = Object.keys(balanceMap);
-
-        // ✅ FIX: handle empty case
-        if (userIds.length === 0) {
-            return res.json({
-                total_balance: 0,
-                breakdown: []
-            });
-        }
-
-        const [users] = await db.query(
-            `SELECT user_id, user_name FROM users WHERE user_id IN (?)`,
-            [userIds]
-        );
-
-        const breakdown = users.map(u => {
-            const bal = balanceMap[u.user_id];
-            return bal > 0
-                ? { user: u.user_name, you_get: bal }
-                : { user: u.user_name, you_owe: Math.abs(bal) };
-        });
-
-        return res.json({ breakdown });
+        return res.json({ balances, settlements });
 
     } catch (error) {
         console.log("BALANCE ERROR:", error);
@@ -1281,16 +1143,127 @@ app.delete("/groups/remove-member", authenticate, async (req, res) => {
 app.delete("/groups/leave", authenticate, async (req, res) => {
     try {
 
-        const { group_id } = req.body;
+        const { group_id, new_admin_id } = req.body;
+        const userId = req.user.user_id;
 
-        await db.query(
-            "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
-            [group_id, req.user.user_id]
+        if (!group_id) {
+            return res.status(400).json({ message: "Group ID required" });
+        }
+
+        // 1️⃣ Check role
+        const [role] = await db.query(
+            "SELECT group_role FROM group_members WHERE group_id = ? AND user_id = ?",
+            [group_id, userId]
         );
 
-        return res.json({ message: "Left group successfully" });
+        if (role.length === 0) {
+            return res.status(403).json({ message: "Not part of group" });
+        }
+
+        const isAdmin = role[0].group_role === "Admin";
+
+        // 2️⃣ CALCULATE REAL BALANCE
+        const [splits] = await db.query(
+            `SELECT e.paid_by, es.user_id, es.amount_owed
+             FROM expense e
+             JOIN expense_split es ON e.expense_id = es.expense_id
+             WHERE e.group_id = ?`,
+            [group_id]
+        );
+
+        let balance = 0;
+
+        splits.forEach(s => {
+            if (s.paid_by !== s.user_id) {
+
+                if (s.paid_by === userId) {
+                    balance += s.amount_owed;
+                }
+
+                if (s.user_id === userId) {
+                    balance -= s.amount_owed;
+                }
+            }
+        });
+
+        const [settlements] = await db.query(
+            `SELECT from_user, to_user, amount 
+             FROM settlements
+             WHERE group_id = ?`,
+            [group_id]
+        );
+
+        settlements.forEach(s => {
+            if (s.from_user === userId) {
+                balance += s.amount;
+            }
+            if (s.to_user === userId) {
+                balance -= s.amount;
+            }
+        });
+
+        // ✅ FINAL CHECK
+        if (Math.abs(balance) > 0.01) {
+            return res.json({ message: "Clear your balances before leaving" });
+        }
+
+        // 3️⃣ ADMIN LOGIC
+        if (isAdmin) {
+
+            const [members] = await db.query(
+                "SELECT user_id FROM group_members WHERE group_id = ?",
+                [group_id]
+            );
+
+            // ✅ only member → delete group
+            if (members.length === 1) {
+
+                await db.query("DELETE FROM expense_split WHERE group_id = ?", [group_id]);
+                await db.query("DELETE FROM expense WHERE group_id = ?", [group_id]);
+                await db.query("DELETE FROM settlements WHERE group_id = ?", [group_id]); // 🔥 IMPORTANT
+                await db.query("DELETE FROM group_members WHERE group_id = ?", [group_id]);
+                await db.query("DELETE FROM group_s WHERE group_id = ?", [group_id]);
+
+                return res.json({ message: "Group deleted as no members left" });
+            }
+
+            // ✅ assign new admin
+            if (!new_admin_id) {
+                return res.json({ message: "Assign a new admin before leaving" });
+            }
+
+            if (new_admin_id == userId) {
+                return res.json({ message: "You are already admin" });
+            }
+
+            // ✅ check new admin is in group
+            const [checkMember] = await db.query(
+                "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
+                [group_id, new_admin_id]
+            );
+
+            if (checkMember.length === 0) {
+                return res.json({ message: "User is not part of this group" });
+            }
+
+            await db.query(
+                `UPDATE group_members 
+                 SET group_role = 'Admin' 
+                 WHERE group_id = ? AND user_id = ?`,
+                [group_id, new_admin_id]
+            );
+        }
+
+        // 4️⃣ remove user
+        await db.query(
+            "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+            [group_id, userId]
+        );
+
+        return res.json({ message: "You left the group" });
 
     } catch (error) {
+        console.log("LEAVE ERROR:", error); // 🔥 add this for debugging
         return res.status(500).json({ message: "Server error" });
     }
 });
@@ -1333,13 +1306,25 @@ app.delete("/groups/:id", authenticate, async (req, res) => {
 
         // 2️⃣ Check pending balances
         const [balances] = await connection.query(
-            `SELECT SUM(amount_owed) AS total
-             FROM expense_split
-             WHERE group_id = ?`,
+            `SELECT 
+                SUM(
+                    CASE 
+                        WHEN e.paid_by != es.user_id THEN es.amount_owed 
+                        ELSE 0 
+                    END
+                ) AS total
+             FROM expense_split es
+             JOIN expense e ON es.expense_id = e.expense_id
+             WHERE es.group_id = ?`,
+            [groupId]
+        );
+        const [settlements] = await connection.query(
+            `SELECT SUM(amount) AS total FROM settlements WHERE group_id = ?`,
             [groupId]
         );
 
-        if (balances[0].total && balances[0].total > 0) {
+        // if settlements exist but not balanced
+        if ((balances[0].total || 0) - (settlements[0].total || 0) > 0) {
             return res.json({ message: "Cannot delete group. Settlements pending." });
         }
 
@@ -1361,6 +1346,52 @@ app.delete("/groups/:id", authenticate, async (req, res) => {
         return res.status(500).json({ message: "Server error" });
     } finally {
         connection.release();
+    }
+});
+
+app.put("/groups/change-admin", authenticate, async (req, res) => {
+    try {
+
+        const { group_id, new_admin_id } = req.body;
+        const userId = req.user.user_id;
+
+        // check current user is admin
+        const [role] = await db.query(
+            "SELECT group_role FROM group_members WHERE group_id = ? AND user_id = ?",
+            [group_id, userId]
+        );
+
+        if (role.length === 0 || role[0].group_role !== "Admin") {
+            return res.status(403).json({ message: "Only admin can change admin" });
+        }
+
+        // check new admin exists
+        const [check] = await db.query(
+            "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
+            [group_id, new_admin_id]
+        );
+
+        if (check.length === 0) {
+            return res.json({ message: "User is not part of this group" });
+        }
+
+        // remove old admin
+        await db.query(
+            "UPDATE group_members SET group_role = 'Member' WHERE group_id = ? AND user_id = ?",
+            [group_id, userId]
+        );
+
+        // assign new admin
+        await db.query(
+            "UPDATE group_members SET group_role = 'Admin' WHERE group_id = ? AND user_id = ?",
+            [group_id, new_admin_id]
+        );
+
+        return res.json({ message: "Admin changed successfully" });
+
+    } catch (error) {
+        console.log("CHANGE ADMIN ERROR:", error);
+        return res.status(500).json({ message: "Server error" });
     }
 });
 

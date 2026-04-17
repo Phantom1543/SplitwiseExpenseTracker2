@@ -66,3 +66,6 @@ settle_date datetime default current_timestamp,
 foreign key(from_user) references users(user_id)on delete cascade,
 foreign key(to_user) references users(user_id)on delete cascade
 );
+
+ALTER TABLE settlements ADD group_id INT;
+ALTER TABLE settlements ADD FOREIGN KEY (group_id) REFERENCES group_s(group_id) ON DELETE CASCADE;
